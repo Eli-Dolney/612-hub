@@ -1,0 +1,16 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+
+# Node
+node_modules/
+dist/
+
+# Logs
+logs/
+*.log
