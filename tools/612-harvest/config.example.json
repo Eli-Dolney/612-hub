@@ -1,0 +1,14 @@
+{
+  "output_dir": "projects",
+  "defaults": {
+    "timeout_sec": 30,
+    "retries": 2,
+    "per_provider": 6,
+    "user_agent": "612 Harvest/1.0 (local documentary stock reel)"
+  },
+  "providers": {
+    "pexels": { "api_key": "" },
+    "pixabay": { "api_key": "" },
+    "unsplash": { "access_key": "" }
+  }
+}

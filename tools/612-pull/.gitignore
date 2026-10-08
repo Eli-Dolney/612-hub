@@ -1,0 +1,48 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+.python-version
+.mypy_cache/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# PO token helper clone (fetched by tools/ensure-pot.sh)
+tools/bgutil-ytdlp-pot-provider/
+
+# IDEs
+.vscode/
+.idea/
+.cursor/
+
+# App output
+downloads/
+music/
+guest-tmp/
+
+# Cookies & secrets
+cookies.txt
+*cookies*.txt
+.netrc
+
+# Temp / partial downloads
+*.part
+*.ytdl
+*.tmp
+
+!.env.example
+.runtime/

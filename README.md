@@ -1,87 +1,53 @@
-# 612 Play
+# 612 Hub studio
 
-A free, fully local music player that runs in the browser. Nothing is uploaded. No accounts, no cloud library, no Electron install.
+Eight local creator tools in one repository. Each lives in `tools/612-<name>` and retains its own frontend, backend, dependencies, and data folder.
 
-Built as a comparison to Music UI : same job (play the files already on disk), different architecture.
+| Tool | Purpose | Browser port | API port |
+|---|---|---:|---:|
+| [Hub](tools/612-hub) | Launch tools, view jobs and media | 5181 | 8793 |
+| [Play](tools/612-play) | Local music library and player | 5176 | — |
+| [Pull](tools/612-pull) | Download media and portable cover images | 5175 | 8788 |
+| [Clip](tools/612-clip) | Transcribe, cut, caption and export clips | 5180 | 8792 |
+| [Edit](tools/612-edit) | Thumbnail and photo editor | 5174 | — |
+| [Harvest](tools/612-harvest) | Find and curate stock footage | 5179 | 8791 |
+| [Mix](tools/612-mix) | Separate stems, analyze and remix audio | 5177 | 8789 |
+| [Voice](tools/612-voice) | Local narration and voice studio | 5178 | 8790 |
 
-## Why this vs Music UI
+## Setup and launch on macOS
 
-| | Music UI | 612 Play |
-|---|---|---|
-| Runtime | Electron + Vite | Vite, Chromium browser |
-| Library | Watch folders over IPC | File System Access API + drag-and-drop |
-| Persistence | JSON in Electron userData | IndexedDB (tracks, art, peaks, playlists) |
-| UI | YouTube Music clone | Listening room — stage, waveform, queue |
-| Playback | Single `<audio>` element | Dual-element **crossfade**, EQ, glue compressor |
-| Visualizer | Overlay tab among 16 modes | Always on the stage, 6 modes |
-| Seek | Thin progress line | Cached waveform |
-| Smart lists | Rules with placeholder dates | Real play counts, last played, added time |
-| Lyrics | Manual paste | Reads sibling `.lrc` files while scanning |
-| Media keys | No | Media Session API |
-| Cost | Free | Free |
+Use Node.js 22.12+ (or a newer supported LTS), Python 3.12 and FFmpeg on PATH. Prepare only the tools you want to use. From the repository root, for example:
 
-## Run
-
-Needs Node.js 18+ and a Chromium browser (Chrome, Edge, Arc) so folder access can persist after refresh.
-
-```bash
-npm install
-npm run dev
+```sh
+cd tools/612-hub
+npm ci
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r server/requirements.txt
+cd ../..
+python3 scripts/run.py hub --check
+python3 scripts/run.py hub
 ```
 
-Open http://localhost:5176. For a static build:
+Open http://127.0.0.1:5181. Repeat preparation for other tools; Play and Edit need only `npm ci`. Hub launches prepared sibling tools. It never installs packages automatically. You can also use `python3 scripts/run.py play`, or run `npm run dev` inside a prepared tool. Each API uses its own `.venv`.
 
-```bash
-npm run build
-npm run preview
+Apple Silicon stays supported by the existing processing engines. This checkout is separate from any Desktop installations; existing media, environments, settings and edits are not moved. Do not run both copies of a tool simultaneously because their ports match.
+
+## Windows
+
+See [WINDOWS.md](WINDOWS.md) for PowerShell commands and per-tool limitations. Windows has not been runtime-tested; the supplied launch paths are designed for both platforms.
+
+## Data and publishing
+
+Source only: no personal media, voice samples, projects, credentials, `.env` files, model weights, environments, dependency folders, caches or build artifacts. Pull guest sharing requires your own `GROKPULL_PASSWORD`; there is no built-in PIN or hosted guest frontend. Optional provider keys remain local.
+
+New Pull downloads can save 128×128 `.cover.png` files and relative-path `.artwork.json` track/playlist manifests for external consumers such as Minecraft. Play reads track cover sidecars; it does not automatically import playlist manifests.
+
+Historical storage keys remain compatible with earlier Grok-branded installations. See [PROVENANCE.md](PROVENANCE.md) for source history and license scope.
+
+## Checks
+
+```sh
+python3 -m unittest discover -s tests -v
+cd tools/612-play && npm test && npm run build
 ```
 
-## Listening workflow
-
-1. **Open music folder** (or drop one on the window). 612 Play walks the tree, reads tags/art, and stores the catalog locally.
-2. Play from **Listen**, **Tracks**, an album, or a mix.
-3. The stage is the product: album art, visualizer, optional synced lyrics.
-4. **Sound** (sliders icon) for EQ presets, glue compressor, and crossfade length.
-5. After a refresh, click **Allow** on a folder if the browser asks — the catalog is already there.
-
-## Mixes
-
-Generated from actual listening, not placeholders:
-
-- Liked
-- On repeat
-- Forgotten gems (played before, quiet for 30+ days)
-- Just in
-- Never played
-- Under 3 minutes
-- Biggest genre in the library
-
-## Shortcuts
-
-| Key | Action |
-|---|---|
-| Space | Play / pause |
-| ← / → | Seek 5s |
-| Shift + arrows | Seek 15s |
-| ↑ / ↓ | Volume |
-| [ / ] or P / N | Previous / next |
-| S / R / L / M / Q | Shuffle, repeat, like, mute, queue |
-| ⌘/Ctrl K | Search |
-| ? | Shortcut list |
-
-## Stack
-
-React 19, TypeScript, Vite, Web Audio, File System Access API, IndexedDB, Lucide, Fontsource (Fraunces / Figtree). MIT-licensed fonts only. No analytics.
-
-## Downloaded artwork
-
-612 Pull and LTW_Downloader can save a 128×128 `<song>.cover.png` next to each audio file,
-plus portable `.artwork.json` manifests for songs and playlists. Open or rescan the
-download folder to show these covers, including for WAV files. The player prefers the
-matching sidecar, then embedded artwork, then a folder cover; missing art keeps the
-record icon. Personal playlists display their first available track cover. Playlist
-manifest files are for external consumers such as Minecraft; they are not auto-imported
-as player playlists.
-
-The browser database and preference keys retain their historical names for compatibility
-so the 612 branding does not reset existing libraries, playlists, or settings.
+Every frontend also supports `npm run build`; TypeScript can be checked with `npx --no-install tsc --noEmit` after installing that tool's dependencies. Pull artwork checks: from `tools/612-pull`, run `.venv/bin/python -m unittest server.test_artwork -v`.
