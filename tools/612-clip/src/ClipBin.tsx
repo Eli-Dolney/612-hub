@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { Flag, Plus, Trash2 } from "lucide-react";
-import { fmtDur, parseTime } from "./api";
+import { useEffect, useState, type FormEvent } from "react";
+import { Flag, Play, Plus, Trash2 } from "lucide-react";
+import { fmtDur, parseClipRanges, parseTime, type ClipRange } from "./api";
 import type { Clip, Segment } from "./types";
 
 const QUICK: { label: string; seconds: number | "first_min" }[] = [
@@ -27,7 +27,6 @@ function ClipRow({
   busy,
   selected,
   hint,
-  onSeek,
   onToggle,
   onSave,
   onDelete,
@@ -42,7 +41,6 @@ function ClipRow({
   busy: boolean;
   selected: boolean;
   hint: ReturnType<typeof clipCaptionHint>;
-  onSeek: (time: number) => void;
   onToggle: (clip: Clip) => void;
   onSave: (clip: Clip) => void;
   onDelete: (clip: Clip) => void;
@@ -51,13 +49,13 @@ function ClipRow({
   onRename: (clip: Clip, label: string) => void;
   onSelect: (clip: Clip) => void;
 }) {
-  const [startDraft, setStartDraft] = useState(clip.start.toFixed(1));
-  const [endDraft, setEndDraft] = useState(clip.end.toFixed(1));
+  const [startDraft, setStartDraft] = useState(String(clip.start));
+  const [endDraft, setEndDraft] = useState(String(clip.end));
   const [labelDraft, setLabelDraft] = useState(clip.label);
 
   useEffect(() => {
-    setStartDraft(clip.start.toFixed(1));
-    setEndDraft(clip.end.toFixed(1));
+    setStartDraft(String(clip.start));
+    setEndDraft(String(clip.end));
   }, [clip.start, clip.end]);
 
   useEffect(() => {
@@ -67,16 +65,16 @@ function ClipRow({
   const commit = (which: "start" | "end", raw: string) => {
     const parsed = parseTime(raw, duration);
     if (parsed == null) {
-      if (which === "start") setStartDraft(clip.start.toFixed(1));
-      else setEndDraft(clip.end.toFixed(1));
+      if (which === "start") setStartDraft(String(clip.start));
+      else setEndDraft(String(clip.end));
       return;
     }
     const start = which === "start" ? parsed : clip.start;
     const end = which === "end" ? parsed : clip.end;
-    if (Math.abs(start - clip.start) < 0.01 && Math.abs(end - clip.end) < 0.01) return;
+    if (Math.abs(start - clip.start) < 0.001 && Math.abs(end - clip.end) < 0.001) return;
     if (Math.abs(end - start) < 0.05) {
-      setStartDraft(clip.start.toFixed(1));
-      setEndDraft(clip.end.toFixed(1));
+      setStartDraft(String(clip.start));
+      setEndDraft(String(clip.end));
       return;
     }
     onPatch(clip, Math.min(start, end), Math.max(start, end));
@@ -87,14 +85,14 @@ function ClipRow({
 
   return (
     <li className={`${clip.kept ? "kept" : "skipped"}${selected ? " on" : ""}`}>
-      <button className="time" onClick={() => onSeek(clip.start)}>
+      <button className="time" aria-label={"Select " + clip.label} aria-pressed={selected} onClick={() => onSelect(clip)}>
         {index + 1}
       </button>
       <div className="clip-row-body">
         <input
           className="clip-label"
+          aria-label={"Name of clip " + (index + 1)}
           value={labelDraft}
-          onFocus={() => onSelect(clip)}
           onChange={(e) => setLabelDraft(e.target.value)}
           onBlur={() => {
             const next = labelDraft.trim() || clip.label;
@@ -111,6 +109,7 @@ function ClipRow({
             onBlur={(e) => commit("start", e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && commit("start", startDraft)}
             title="Start"
+            aria-label={"Start of clip " + (index + 1)}
           />
           <span className="muted">–</span>
           <input
@@ -120,6 +119,7 @@ function ClipRow({
             onBlur={(e) => commit("end", e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && commit("end", endDraft)}
             title="End"
+            aria-label={"End of clip " + (index + 1)}
           />
           <em>{fmtDur(clip.duration)}</em>
           <span className={`clip-cap ${hint}`}>{hintLabel}</span>
@@ -135,10 +135,10 @@ function ClipRow({
         <option value="broll">B-roll</option>
         <option value="intro">Intro</option>
       </select>
-      <button className={clip.kept ? "tiny on" : "tiny"} onClick={() => onToggle(clip)}>
-        {clip.kept ? "Keep" : "Drop"}
+      <button className={clip.kept ? "tiny on" : "tiny"} aria-label={(clip.kept ? "Exclude " : "Include ") + clip.label} onClick={() => onToggle(clip)}>
+        {clip.kept ? "Kept" : "Excluded"}
       </button>
-      <button className="tiny" disabled={busy} onClick={() => onSave(clip)}>
+      <button className="tiny" title="Save this clip to the project bundle" disabled={busy} onClick={() => onSave(clip)}>
         Save
       </button>
       <button className="tiny danger" onClick={() => onDelete(clip)} aria-label="Remove clip">
@@ -162,12 +162,14 @@ export default function ClipBin({
   onMarkOut,
   onSetMarks,
   onAdd,
+  onAddRanges,
   onQuickAdd,
   onToggle,
   onDelete,
   onSave,
-  onSaveKept,
-  onSeek,
+  onPreview,
+  canPreview,
+  reviewing,
   onPatch,
   onKind,
   onRename,
@@ -186,12 +188,14 @@ export default function ClipBin({
   onMarkOut: () => void;
   onSetMarks: (start: number | null, end: number | null) => void;
   onAdd: () => void;
+  onAddRanges: (ranges: ClipRange[]) => Promise<void>;
   onQuickAdd: (start: number, end: number) => void;
   onToggle: (clip: Clip) => void;
   onDelete: (clip: Clip) => void;
   onSave: (clip: Clip) => void;
-  onSaveKept: () => void;
-  onSeek: (time: number) => void;
+  onPreview: () => void;
+  canPreview: boolean;
+  reviewing: boolean;
   onPatch: (clip: Clip, start: number, end: number) => void;
   onKind: (clip: Clip, kind: string) => void;
   onRename: (clip: Clip, label: string) => void;
@@ -199,20 +203,23 @@ export default function ClipBin({
 }) {
   const [inDraft, setInDraft] = useState("");
   const [outDraft, setOutDraft] = useState("");
+  const [rangeDraft, setRangeDraft] = useState("");
+  const [rangeError, setRangeError] = useState("");
+  const [addingRanges, setAddingRanges] = useState(false);
   const span = markIn != null && markOut != null ? Math.abs(markOut - markIn) : 0;
   const canAdd = markIn != null && markOut != null && span >= 0.05 && !busy;
   const kept = clips.filter((c) => c.kept).length;
 
   useEffect(() => {
-    setInDraft(markIn == null ? "" : markIn.toFixed(1));
-    setOutDraft(markOut == null ? "" : markOut.toFixed(1));
+    setInDraft(markIn == null ? "" : String(Number(markIn.toFixed(3))));
+    setOutDraft(markOut == null ? "" : String(Number(markOut.toFixed(3))));
   }, [markIn, markOut]);
 
   const commit = (which: "in" | "out", raw: string) => {
     const parsed = parseTime(raw, duration);
     if (parsed == null) {
-      if (which === "in") setInDraft(markIn == null ? "" : markIn.toFixed(1));
-      else setOutDraft(markOut == null ? "" : markOut.toFixed(1));
+      if (which === "in") setInDraft(markIn == null ? "" : String(Number(markIn.toFixed(3))));
+      else setOutDraft(markOut == null ? "" : String(Number(markOut.toFixed(3))));
       return;
     }
     if (which === "in") onSetMarks(parsed, markOut);
@@ -233,8 +240,27 @@ export default function ClipBin({
     onQuickAdd(start, end);
   };
 
+  const addRanges = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy || !duration || addingRanges) return;
+    setRangeError("");
+    setAddingRanges(true);
+    try {
+      await onAddRanges(parseClipRanges(rangeDraft, duration));
+      setRangeDraft("");
+    } catch (err) {
+      setRangeError(err instanceof Error ? err.message : "Could not add the clip ranges.");
+    } finally {
+      setAddingRanges(false);
+    }
+  };
+
   return (
     <div className="clip-bin">
+      <div className="selection-head">
+        <h3>Trim a range</h3>
+        <span className="hint">Drag on the waveform or mark In and Out.</span>
+      </div>
       <div className="clip-marks">
         <button className="tiny" onClick={onMarkIn} title="I — mark in at playhead">
           <Flag size={12} />
@@ -246,6 +272,7 @@ export default function ClipBin({
         </button>
         <input
           className="clip-time"
+          aria-label="In time"
           value={inDraft}
           placeholder="start s"
           onChange={(e) => setInDraft(e.target.value)}
@@ -255,16 +282,20 @@ export default function ClipBin({
         <span className="muted">–</span>
         <input
           className="clip-time"
+          aria-label="Out time"
           value={outDraft}
           placeholder="end s"
           onChange={(e) => setOutDraft(e.target.value)}
           onBlur={(e) => commit("out", e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && commit("out", outDraft)}
         />
-        <em>{span >= 0.05 ? fmtDur(span) : fmtDur(current)}</em>
+        <em>{span >= 0.05 ? fmtDur(span) : "—"}</em>
+        <button type="button" className="ghost" disabled={!canPreview} onClick={onPreview}>
+          <Play size={14} /> {reviewing ? "Stop preview" : "Preview range"}
+        </button>
         <button className="pull" disabled={!canAdd} onClick={onAdd} title="Enter — add clip">
           <Plus size={14} />
-          Add clip
+          Add to bin
         </button>
         <button
           className="tiny"
@@ -272,9 +303,6 @@ export default function ClipBin({
           onClick={() => onSetMarks(null, null)}
         >
           Clear
-        </button>
-        <button className="pull" disabled={busy || kept === 0} onClick={onSaveKept}>
-          Save kept ({kept})
         </button>
       </div>
       <div className="chip-row wrap clip-quick">
@@ -290,10 +318,41 @@ export default function ClipBin({
           </button>
         ))}
       </div>
-      <p className="hint clip-hint">
-        Mark keepers from a 612 Pull download. Unused minutes never get exported. Talk clips can burn captions; B-roll
-        stays silent.
-      </p>
+      <details className="range-entry">
+      <summary>Enter exact time ranges</summary>
+      <form className="clip-ranges" onSubmit={(event) => void addRanges(event)}>
+        <label htmlFor="clip-ranges">Time ranges</label>
+        <div>
+          <textarea
+            id="clip-ranges"
+            className="line-edit"
+            rows={2}
+            placeholder="1-15, 33-40, 1:00-1:20"
+            value={rangeDraft}
+            disabled={addingRanges}
+            aria-invalid={Boolean(rangeError)}
+            aria-describedby={rangeError ? "clip-range-error" : "clip-range-help"}
+            onChange={(event) => {
+              setRangeDraft(event.target.value);
+              setRangeError("");
+            }}
+          />
+          <button type="submit" className="ghost" disabled={busy || !duration || addingRanges || !rangeDraft.trim()}>
+            <Plus size={14} />
+            {addingRanges ? "Adding…" : "Add ranges"}
+          </button>
+        </div>
+        {rangeError ? (
+          <p className="hint clip-range-error" id="clip-range-error" role="alert">{rangeError}</p>
+        ) : (
+          <p className="hint" id="clip-range-help">Use seconds or minutes:seconds. Separate ranges with commas or new lines.</p>
+        )}
+      </form>
+      </details>
+      <div className="selection-head clip-bin-heading">
+        <h3>Clip bin</h3>
+        <span className="hint">{kept} of {clips.length} kept</span>
+      </div>
       {clips.length > 0 && (
         <ul className="clip-list">
           {clips.map((clip, i) => (
@@ -305,7 +364,6 @@ export default function ClipBin({
               busy={busy}
               selected={selectedId === clip.id}
               hint={clipCaptionHint(clip, segments, captionsOn)}
-              onSeek={onSeek}
               onToggle={onToggle}
               onSave={onSave}
               onDelete={onDelete}
@@ -317,6 +375,7 @@ export default function ClipBin({
           ))}
         </ul>
       )}
+      {!clips.length && <p className="clip-bin-empty hint">Add a range to start your clip bin.</p>}
     </div>
   );
 }

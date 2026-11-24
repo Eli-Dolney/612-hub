@@ -35,9 +35,9 @@ def status() -> dict[str, Any]:
 
 
 @app.post("/api/apps/{app_id}/launch")
-def launch(app_id: str, force: bool = False) -> dict[str, Any]:
+def launch(app_id: str, force: bool = False, external: bool = True) -> dict[str, Any]:
     try:
-        return engine.launch(app_id, force=force)
+        return engine.launch(app_id, force=force, external=external)
     except KeyError:
         raise HTTPException(404, "Unknown app") from None
     except RuntimeError as exc:
@@ -57,9 +57,9 @@ def stop(app_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/apps/{app_id}/open")
-def open_app(app_id: str) -> dict[str, Any]:
+def open_app(app_id: str, external: bool = True) -> dict[str, Any]:
     try:
-        return engine.open_app(app_id)
+        return engine.open_app(app_id, external=external)
     except KeyError:
         raise HTTPException(404, "Unknown app") from None
     except RuntimeError as exc:

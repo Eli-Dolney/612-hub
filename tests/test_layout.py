@@ -48,4 +48,21 @@ class LayoutTests(unittest.TestCase):
             engine._kill_tree(42)
             self.assertEqual(call.call_args.args[0],['taskkill','/PID','42','/T','/F'])
 
+
+    def test_windows_environment_is_detected(self):
+        with patch.object(engine.os, 'name', 'nt'), patch.object(engine, 'installed', return_value=True), patch.object(Path, 'is_dir', return_value=True), patch.object(Path, 'is_file', return_value=True) as exists:
+            self.assertTrue(engine.configured(catalog.get_app('pull')))
+
+    def test_unprepared_tool_fails_before_spawning(self):
+        with patch.object(engine, 'installed', return_value=True), patch.object(engine, 'live', return_value=False), patch.object(engine, 'configured', return_value=False), patch.object(engine.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(RuntimeError, 'first-time setup'):
+                engine.launch('pull', external=False)
+            spawn.assert_not_called()
+
+    def test_browser_open_does_not_spawn_external_browser(self):
+        with patch.object(engine, 'live', return_value=True), patch.object(engine, 'touch_opened'), patch.object(engine, 'open_url') as open_url:
+            result = engine.open_app('pull', external=False)
+            self.assertEqual(result['url'], 'http://127.0.0.1:5175')
+            open_url.assert_not_called()
+
 if __name__=='__main__':unittest.main()

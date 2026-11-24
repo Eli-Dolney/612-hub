@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -21,7 +20,7 @@ def ytdlp_available() -> bool:
 
         return True
     except Exception:
-        return shutil.which("yt-dlp") is not None
+        return False
 
 
 def validate_url(url: str) -> str:
@@ -68,7 +67,7 @@ def pull_url(
     try:
         import yt_dlp
     except Exception as exc:
-        raise RuntimeError("yt-dlp is not installed. Run: .venv/bin/pip install yt-dlp") from exc
+        raise RuntimeError("Install the 612 Clip server requirements in its Python environment.") from exc
 
     target = validate_url(url)
     dest.mkdir(parents=True, exist_ok=True)
@@ -94,6 +93,7 @@ def pull_url(
         "outtmpl": str(dest / "%(title).80s [%(id)s].%(ext)s"),
         "format": "bv*+ba/b",
         "merge_output_format": "mp4",
+        "js_runtimes": {"deno": {}, "node": {}},
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,

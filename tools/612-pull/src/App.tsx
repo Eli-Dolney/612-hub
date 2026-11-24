@@ -333,7 +333,7 @@ export default function App() {
             <>
               <span className={health.ffmpeg ? "ok" : "bad"}>ffmpeg {health.ffmpeg ? "ready" : "missing"}</span>
               <span className={health.node ? "ok" : "bad"}>node {health.node ? "ready" : "missing"}</span>
-              <span className={health.pot ? "ok" : "bad"}>youtube {health.pot ? "ready" : "needs helper"}</span>
+              <span className={(health.js_ready ?? health.node) ? "ok" : "bad"}>youtube {(health.js_ready ?? health.node) ? "ready" : "needs runtime"}</span>
               <span>yt-dlp {health.ytdlp || "—"}</span>
             </>
           )}

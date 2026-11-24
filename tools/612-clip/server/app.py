@@ -15,7 +15,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, FiniteFloat
 
 from server.config import APP_TITLE, APP_VERSION, INBOX_DIR, PROJECTS_DIR, SUPPORTED, UI_PORT
 from server import pipeline
@@ -70,6 +70,15 @@ class ClipIn(BaseModel):
     label: str = ""
     kept: bool = True
     kind: str = "talk"
+
+
+class ClipRangeIn(BaseModel):
+    start: FiniteFloat
+    end: FiniteFloat
+
+
+class ClipRangesIn(BaseModel):
+    ranges: list[ClipRangeIn] = Field(min_length=1, max_length=100)
 
 
 class ClipPatch(BaseModel):
@@ -211,7 +220,7 @@ def _run_job(job_id: str) -> None:
             result = pipeline.export_clip(project, int(job["clip_id"]), progress)
             last_export = result.get("last_export") or {}
         elif kind == "clips":
-            result = pipeline.export_kept_clips(project, progress)
+            result = pipeline.export_kept_clips(project, progress, beside_source=bool(job.get("beside_source")))
             last_export = result.get("last_export") or {}
         elif kind == "order":
             from server.engine.orders import run_order
@@ -252,6 +261,8 @@ def _run_job(job_id: str) -> None:
             count = last_export.get("count") or 0
             skipped = last_export.get("skipped_captions") or 0
             step = f"Saved {count} clips"
+            if job.get("beside_source"):
+                step += " beside source"
             if skipped:
                 step += f" · {skipped} without captions"
             filename = last_export.get("filename")
@@ -426,6 +437,16 @@ def api_add_clip(slug: str, body: ClipIn) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/projects/{slug}/clips/ranges")
+def api_add_clip_ranges(slug: str, body: ClipRangesIn) -> dict[str, Any]:
+    try:
+        return pipeline.add_clip_ranges(slug, [row.model_dump() for row in body.ranges])
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found") from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.patch("/api/projects/{slug}/clips/{clip_id}")
 def api_patch_clip(slug: str, clip_id: int, body: ClipPatch) -> dict[str, Any]:
     try:
@@ -455,12 +476,12 @@ def api_export_clip(slug: str, clip_id: int) -> dict[str, Any]:
 
 
 @app.post("/api/projects/{slug}/clips/export-kept")
-def api_export_kept_clips(slug: str) -> dict[str, Any]:
+def api_export_kept_clips(slug: str, beside_source: bool = False) -> dict[str, Any]:
     try:
         pipeline.load_project(slug)
     except FileNotFoundError:
         raise HTTPException(404, "Project not found") from None
-    return enqueue_job(slug, "clips", title="Save kept clips")
+    return enqueue_job(slug, "clips", title="Save kept clips", beside_source=beside_source)
 
 
 @app.patch("/api/projects/{slug}/transcript/{seg_id}")
@@ -542,9 +563,9 @@ def api_open_inbox() -> dict[str, Any]:
 
 
 @app.post("/api/projects/{slug}/open")
-def api_open(slug: str) -> dict[str, Any]:
+def api_open(slug: str, beside_source: bool = False) -> dict[str, Any]:
     try:
-        pipeline.open_bundle(slug)
+        pipeline.open_bundle(slug, beside_source=beside_source)
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -572,7 +593,7 @@ def api_order(body: OrderIn) -> dict[str, Any]:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if not ytdlp_available():
-            raise HTTPException(400, "yt-dlp is missing. From 612-clip run: .venv/bin/pip install yt-dlp")
+            raise HTTPException(400, "Install the 612 Clip server requirements in its Python environment.")
     if kind == "project" and not source.get("slug"):
         raise HTTPException(400, "Pick a clip first")
     if not body.steps:

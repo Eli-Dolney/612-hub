@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   Download,
+  FastForward,
+  FolderOpen,
   LoaderCircle,
   Pause,
   Play,
+  RefreshCw,
+  Rewind,
   Scissors,
   Search,
   Sparkles,
   Upload,
 } from "lucide-react";
-import { api, events, fmtBytes, fmtDur, mediaUrl } from "./api";
+import { api, events, fmtBytes, fmtDur, mediaUrl, type ClipRange } from "./api";
 import type { Clip, Detail, Health, Job, PullFile, Segment, Summary } from "./types";
 import ClipBin from "./ClipBin";
 import FitStage from "./FitStage";
@@ -64,23 +68,28 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [status, setStatus] = useState("Drop a long video. Probe first. Whisper when you say so.");
+  const [status, setStatus] = useState("Ready");
   const [dropOver, setDropOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [query, setQuery] = useState("");
-  const [previewKept, setPreviewKept] = useState(true);
+  const [previewKept, setPreviewKept] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [creditDraft, setCreditDraft] = useState("");
   const [markIn, setMarkIn] = useState<number | null>(null);
   const [markOut, setMarkOut] = useState<number | null>(null);
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
+  const [saveLocation, setSaveLocation] = useState<"source" | "project">("source");
   const [pullQuery, setPullQuery] = useState("");
   const [inboxRecipe, setInboxRecipe] = useState<"suggest" | "shorts" | "silent" | string>("shorts");
-  const [safeZones, setSafeZones] = useState(true);
+  const [safeZones, setSafeZones] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const logoRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const reviewEnd = useRef<number | null>(null);
+  const activeProject = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const loadList = useCallback(async () => {
@@ -90,17 +99,40 @@ export default function App() {
   }, []);
 
   const loadDetail = useCallback(async (slug: string) => {
+    activeProject.current = slug;
     const data = await api.project(slug);
+    if (activeProject.current !== slug) return data;
     setDetail(data);
     setSelected(slug);
     setCreditDraft(data.settings.credit || "");
+    sessionStorage.setItem("612-clip-project", slug);
     return data;
   }, []);
 
+  const refreshLibrary = useCallback(async () => {
+    const [, data] = await Promise.all([loadList(), api.pulls()]);
+    setPulls(data.files);
+  }, [loadList]);
+
+  const refreshDetail = useCallback(async (slug: string) => {
+    if (activeProject.current !== slug) return;
+    const data = await api.project(slug);
+    setDetail((current) => current?.slug === slug ? data : current);
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => void refreshLibrary().catch(() => undefined);
+    refresh();
+    window.addEventListener("focus", refresh);
+    const lastProject = sessionStorage.getItem("612-clip-project");
+    if (lastProject) void loadDetail(lastProject).catch(() => {
+      if (activeProject.current === lastProject) activeProject.current = null;
+    });
+    return () => window.removeEventListener("focus", refresh);
+  }, [loadDetail, refreshLibrary]);
+
   useEffect(() => {
     api.health().then(setHealth).catch((err) => setStatus(String(err)));
-    loadList().catch((err) => setStatus(String(err)));
-    api.pulls().then((d) => setPulls(d.files)).catch(() => undefined);
     api.queue().then((q) => setJobs(q.jobs)).catch(() => undefined);
     api.inbox().then((i) => setInboxRecipe(i.recipe || "shorts")).catch(() => undefined);
     return events((event) => {
@@ -117,18 +149,23 @@ export default function App() {
         if (job.status === "running") setStatus(`${kindLabel(job)} · ${job.step}`);
         if (job.status === "done") {
           setStatus(`${kindLabel(job)} · ${job.step}`);
-          if (job.project) loadDetail(job.project).catch(() => undefined);
-          loadList().catch(() => undefined);
+          if (job.project) {
+            const refresh = activeProject.current ? refreshDetail : loadDetail;
+            void refresh(job.project).catch(() => undefined);
+          }
+          void refreshLibrary().catch(() => undefined);
         }
         if (job.status === "error") setStatus(job.error || "Job failed");
       }
       if (event.type === "project") {
-        loadList();
         const summary = event.project as Summary | undefined;
-        if (summary?.slug && summary.slug === selected) loadDetail(summary.slug);
+        if (summary?.slug) {
+          void loadList().catch(() => undefined);
+          void refreshDetail(summary.slug).catch(() => undefined);
+        }
       }
     });
-  }, [loadDetail, loadList, selected]);
+  }, [loadDetail, loadList, refreshDetail, refreshLibrary]);
 
   const running = useMemo(() => jobs.find((j) => j.status === "running") || null, [jobs]);
   const queuedCount = useMemo(
@@ -140,7 +177,12 @@ export default function App() {
   const segments = detail?.transcript.segments || [];
   const ranges = detail?.ranges || [];
   const clips = detail?.clips || [];
+  const selectedClip = clips.find((clip) => clip.id === selectedClipId);
+  const markedRange = markIn !== null && markOut !== null && Math.abs(markOut - markIn) >= 0.05
+    ? { start: Math.min(markIn, markOut), end: Math.max(markIn, markOut) }
+    : null;
   const duration = detail?.duration || 0;
+  const saveBesideSource = detail?.can_save_beside_source === true && saveLocation === "source";
   const windowRange = detail?.window || null;
   const waveRanges = clips.length
     ? []
@@ -233,11 +275,69 @@ export default function App() {
     }
   };
 
+  const stopReview = () => {
+    reviewEnd.current = null;
+    setReviewing(false);
+  };
+
   const seek = (time: number) => {
     const video = videoRef.current;
-    if (video) video.currentTime = time;
-    setCurrent(time);
+    const target = Math.max(0, Math.min(duration, time));
+    if (reviewEnd.current !== null) video?.pause();
+    stopReview();
+    if (video) video.currentTime = target;
+    setCurrent(target);
   };
+
+  const selectClip = (clip: Clip) => {
+    videoRef.current?.pause();
+    setSelectedClipId(clip.id);
+    setMarkIn(null);
+    setMarkOut(null);
+    seek(clip.start);
+  };
+
+  const previewRange = () => {
+    const range = markedRange ?? selectedClip;
+    const video = videoRef.current;
+    if (!range || !video) return;
+    reviewEnd.current = range.end;
+    setReviewing(true);
+    video.currentTime = range.start;
+    setCurrent(range.start);
+    void video.play().catch(() => {
+      stopReview();
+      setStatus("The source could not play in this browser.");
+    });
+  };
+
+  const togglePlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    stopReview();
+    if (video.paused) void video.play().catch(() => setStatus("The source could not play in this browser."));
+    else video.pause();
+  };
+
+  useEffect(() => {
+    if (!playing) return;
+    let frame = 0;
+    const checkEnd = () => {
+      const video = videoRef.current;
+      const end = reviewEnd.current;
+      if (video && end !== null && video.currentTime >= end) {
+        reviewEnd.current = null;
+        video.pause();
+        video.currentTime = end;
+        setCurrent(end);
+        setReviewing(false);
+        return;
+      }
+      frame = requestAnimationFrame(checkEnd);
+    };
+    frame = requestAnimationFrame(checkEnd);
+    return () => cancelAnimationFrame(frame);
+  }, [playing]);
 
   const addClipRange = useCallback(
     async (start: number, end: number, clearMarks = true) => {
@@ -255,6 +355,8 @@ export default function App() {
           setMarkIn(null);
           setMarkOut(null);
         }
+        const added = next.clips?.find((clip) => !detail.clips?.some((old) => old.id === clip.id));
+        if (added) setSelectedClipId(added.id);
         setStatus(`Added clip ${fmtDur(a)}–${fmtDur(b)}`);
       } catch (err) {
         setStatus(err instanceof Error ? err.message : "Could not add clip");
@@ -267,6 +369,14 @@ export default function App() {
     if (markIn == null || markOut == null) return;
     await addClipRange(markIn, markOut, true);
   }, [addClipRange, markIn, markOut]);
+
+  const addClipRanges = async (ranges: ClipRange[]) => {
+    if (!detail) return;
+    const next = await api.addClipRanges(detail.slug, ranges);
+    setDetail((current) => current?.slug === next.slug ? next : current);
+    setProjects((current) => current.map((project) => project.slug === next.slug ? next : project));
+    setStatus(ranges.length === 1 ? "Added 1 clip" : `Added ${ranges.length} clips`);
+  };
 
   const patchClipTimes = async (clip: Clip, start: number, end: number) => {
     if (!detail) return;
@@ -283,13 +393,18 @@ export default function App() {
     setMarkIn(null);
     setMarkOut(null);
     setSelectedClipId(null);
+    setSaveLocation("source");
+    setPreviewKept(false);
+    setCurrent(0);
+    reviewEnd.current = null;
+    setReviewing(false);
   }, [selected]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!detail) return;
+      if (!detail || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
       const tag = (event.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A" || tag === "SUMMARY") return;
       if (event.key === " " || event.code === "Space") {
         event.preventDefault();
         const video = videoRef.current;
@@ -300,13 +415,23 @@ export default function App() {
       }
       if (event.key === "i" || event.key === "I") {
         event.preventDefault();
+        setSelectedClipId(null);
         setMarkIn(current);
       } else if (event.key === "o" || event.key === "O") {
         event.preventDefault();
+        setSelectedClipId(null);
         setMarkOut(current);
       } else if (event.key === "Enter") {
         event.preventDefault();
         void addClip();
+      } else if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const video = videoRef.current;
+        if (!video) return;
+        event.preventDefault();
+        const seconds = (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 5 : 0.1);
+        reviewEnd.current = null;
+        setReviewing(false);
+        video.currentTime = Math.max(0, Math.min(detail.duration || 0, video.currentTime + seconds));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -321,8 +446,18 @@ export default function App() {
 
   const removeClip = async (clip: Clip) => {
     if (!detail) return;
-    const next = await api.removeClip(detail.slug, clip.id);
-    setDetail(next);
+    try {
+      const next = await api.removeClip(detail.slug, clip.id);
+      if (activeProject.current !== next.slug) return;
+      setDetail(next);
+      if (selectedClipId === clip.id) {
+        videoRef.current?.pause();
+        stopReview();
+        setSelectedClipId(null);
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Could not remove the clip.");
+    }
   };
 
   const saveClip = async (clip: Clip) => {
@@ -332,9 +467,13 @@ export default function App() {
   };
 
   const saveKept = async () => {
-    if (!detail) return;
-    await api.exportKeptClips(detail.slug);
-    setStatus("Saving kept clips…");
+    if (!detail || busy) return;
+    try {
+      await api.exportKeptClips(detail.slug, saveBesideSource);
+      setStatus(saveBesideSource ? "Saving clips beside the source video…" : "Saving kept clips…");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Could not save kept clips.");
+    }
   };
 
   const patchClipKind = async (clip: Clip, kind: string) => {
@@ -368,6 +507,10 @@ export default function App() {
     const video = videoRef.current;
     if (!video) return;
     let t = video.currentTime;
+    if (video.paused || reviewEnd.current !== null) {
+      setCurrent(t);
+      return;
+    }
     if (previewKept && ranges.length) {
       const here = ranges.find((r) => inRange(t, r.start, r.end - 0.04));
       if (!here) {
@@ -375,7 +518,7 @@ export default function App() {
         if (next) {
           video.currentTime = next.start;
           t = next.start;
-        } else {
+        } else if (t >= ranges[ranges.length - 1].end - 0.04) {
           video.pause();
         }
       }
@@ -404,8 +547,12 @@ export default function App() {
 
   const patchSettings = async (settings: Record<string, unknown>) => {
     if (!detail) return;
-    const next = await api.patch(detail.slug, { settings });
-    setDetail(next);
+    try {
+      const next = await api.patch(detail.slug, { settings });
+      setDetail((current) => current?.slug === next.slug ? next : current);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Could not update clip settings.");
+    }
   };
 
   const sourceUrl = detail?.source ? mediaUrl(detail.slug, detail.source) : "";
@@ -422,19 +569,11 @@ export default function App() {
     >
       <header className="topbar">
         <div className="brand">
+          <span className="brand-icon"><Scissors size={19} /></span>
           <b>612 Clip</b>
-          <span>chop keepers</span>
         </div>
         <div className="grow" />
-        {health && (
-          <>
-            <span className={health.ffmpeg ? "pill ok" : "pill warn"}>{health.ffmpeg ? "ffmpeg" : "no ffmpeg"}</span>
-            <span className={health.whisper ? "pill ok" : "pill warn"}>{health.whisper ? health.device : "whisper?"}</span>
-            {health.videotoolbox && <span className="pill ok">VideoToolbox</span>}
-            {health.ytdlp && <span className="pill ok">yt-dlp</span>}
-            {health.grokedit && <span className="pill ok">612 Edit</span>}
-          </>
-        )}
+        {health && <span className={health.ffmpeg ? "engine-status" : "engine-status unavailable"}>{health.ffmpeg ? "Local processing" : "FFmpeg required"}</span>}
         <button className="ghost" onClick={() => fileRef.current?.click()} disabled={uploading}>
           {uploading ? <LoaderCircle size={14} className="spin" /> : <Upload size={14} />}
           Open video
@@ -466,15 +605,21 @@ export default function App() {
 
       <div className="studio">
         <aside className="library">
-          <div className="pane-head">Library</div>
+          <div className="library-head">
+            <h2>Media library</h2>
+            <button className="ghost icon" aria-label="Refresh media library" title="Refresh media library"
+              onClick={() => void refreshLibrary().catch(() => setStatus("Could not refresh the media library."))}>
+              <RefreshCw size={15} />
+            </button>
+          </div>
           <button className="dropzone" onClick={() => fileRef.current?.click()}>
-            Drop a file, or pick a 612 Pull download. Probe first — Whisper waits.
+            <Upload size={18} /> Import or drop video
           </button>
           <ul className="project-list">
             {projects.map((p) => (
               <li key={p.slug}>
                 <button className={p.slug === selected ? "project on" : "project"} onClick={() => loadDetail(p.slug)}>
-                  <strong>{p.name}</strong>
+                  <strong title={p.name}>{p.name}</strong>
                   <em>
                     {fmtDur(p.duration)} ·{" "}
                     {p.clip_count
@@ -502,7 +647,7 @@ export default function App() {
                   .map((f) => (
                     <li key={f.path}>
                       <button className="project" onClick={() => void importPull(f.path, f.name)} disabled={uploading}>
-                        <strong>{f.name}</strong>
+                        <strong title={f.name}>{f.name}</strong>
                         <em>
                           {f.duration ? `${fmtDur(f.duration)} · ` : ""}
                           {fmtBytes(f.size)}
@@ -519,18 +664,15 @@ export default function App() {
           {!detail ? (
             <div className="empty-stage">
               <Scissors size={36} />
-              <h1>Chop the download</h1>
-              <p>
-                Open a 612 Pull file on the left. Mark the first 30s, jump around a long video, add only the bits you
-                will use. Save kept clips — unused minutes stay in the source. Transcribe talking clips if you need
-                captions you can edit.
-              </p>
+              <h1>Open a video to start cutting</h1>
+              <p>Import a file or choose a download from the media library.</p>
+              <button className="pull" onClick={() => fileRef.current?.click()} disabled={uploading}><Upload size={16} /> Open video</button>
             </div>
           ) : (
             <>
               <div className="stage-head">
                 <div>
-                  <h1>{detail.name}</h1>
+                  <h1 title={detail.name}>{detail.name}</h1>
                   <p>
                     {detail.width}×{detail.height} · {fmtDur(duration)} source
                     {windowRange ? ` · keep ${fmtDur(windowRange.start)}–${fmtDur(windowRange.end)}` : ""}
@@ -553,15 +695,47 @@ export default function App() {
                   <button
                     className="pull"
                     disabled={busy || !clips.some((c) => c.kept)}
-                    onClick={() => {
-                      void api.exportKeptClips(detail.slug);
-                      setStatus("Saving kept clips…");
-                    }}
+                    onClick={() => void saveKept()}
                   >
                     {busy && running?.kind === "clips" ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
                     Save kept clips
                   </button>
                 </div>
+              </div>
+
+              <div className="clip-output">
+                <label>
+                  Format
+                  <select className="clip-kind" value={detail.settings.frame} disabled={busy}
+                    onChange={(event) => void patchSettings({ frame: event.target.value })}>
+                    <option value="9:16">Portrait · 9:16</option>
+                    <option value="16:9">Landscape · 16:9</option>
+                    <option value="1:1">Square · 1:1</option>
+                    <option value="4:5">Feed · 4:5</option>
+                  </select>
+                </label>
+                <label>
+                  Destination
+                  <select
+                    className="clip-kind"
+                    value={saveBesideSource ? "source" : "project"}
+                    disabled={busy || !detail.can_save_beside_source}
+                    onChange={(event) => setSaveLocation(event.target.value === "source" ? "source" : "project")}
+                  >
+                    {detail.can_save_beside_source && <option value="source">Beside source (612 Clips)</option>}
+                    <option value="project">Project bundle</option>
+                  </select>
+                </label>
+                {(detail.source_clips_folder || detail.bundle?.clip_files?.length || detail.bundle?.primary) && (
+                  <button
+                    className="tiny"
+                    title={saveBesideSource ? detail.source_clips_folder : undefined}
+                    onClick={() => void api.open(detail.slug, Boolean(saveBesideSource && detail.source_clips_folder))
+                      .catch((err) => setStatus(err instanceof Error ? err.message : "Could not open the export folder."))}
+                  >
+                    <FolderOpen size={14} /> Open saved folder
+                  </button>
+                )}
               </div>
 
               {running && (
@@ -594,49 +768,37 @@ export default function App() {
                       captionWords={detail.settings.captions ? liveCaption : []}
                       currentTime={current}
                       showSafeZones={safeZones}
+                      playing={playing}
+                      onTogglePlayback={togglePlayback}
                       onTimeUpdate={onTime}
                       onPlay={() => setPlaying(true)}
-                      onPause={() => setPlaying(false)}
+                      onPause={() => { stopReview(); setPlaying(false); }}
                     />
                   ) : (
                     <div className="muted">No source</div>
                   )}
                 </div>
                 <div className="transport">
-                  <button
-                    className="ghost"
-                    onClick={() => {
-                      const video = videoRef.current;
-                      if (!video) return;
-                      if (video.paused) video.play();
-                      else video.pause();
-                    }}
-                  >
+                  <button className="ghost icon" aria-label="Back 5 seconds" title="Back 5 seconds" onClick={() => seek(current - 5)}><Rewind size={15} /></button>
+                  <button className="ghost transport-play" onClick={togglePlayback}>
                     {playing ? <Pause size={14} /> : <Play size={14} />}
                     {playing ? "Pause" : "Play"}
                   </button>
-                  <button className={previewKept ? "tiny on" : "tiny"} onClick={() => setPreviewKept((v) => !v)}>
-                    Skip unkept
+                  <button className="ghost icon" aria-label="Forward 5 seconds" title="Forward 5 seconds" onClick={() => seek(current + 5)}><FastForward size={15} /></button>
+                  <span className="transport-time">{fmtDur(current)} <span>/ {fmtDur(duration)}</span></span>
+                  <span className="grow" />
+                  <button className={previewKept ? "tiny on" : "tiny"} aria-pressed={previewKept} onClick={() => { stopReview(); setPreviewKept((v) => !v); }}>
+                    Play kept only
                   </button>
-                  <button className={safeZones ? "tiny on" : "tiny"} onClick={() => setSafeZones((v) => !v)}>
+                  <button className={safeZones ? "tiny on" : "tiny"} aria-pressed={safeZones} onClick={() => setSafeZones((v) => !v)}>
                     Safe zones
                   </button>
-                  <span className="muted keys">
-                    {fmtDur(current)} · Space · I/O · Enter
-                    {liveCaption.length ? " · captions" : ""}
-                  </span>
                 </div>
-                <p className="hint clip-hint">
-                  {clips.length && !clips.some((c) => c.kept)
-                    ? "Every clip is dropped, so export uses transcript lines instead. Keep a clip, or delete it."
-                    : segments.length
-                      ? "Play to preview captions. Click a line to fix Whisper. Save kept clips writes only those files."
-                      : "Mark In/Out keepers first. Transcribe if you need words. B-roll skips captions."}
-                </p>
               </div>
 
               <div className="card wave-card">
                 <Waveform
+                  key={detail.slug}
                   peaks={detail.peaks}
                   duration={duration}
                   current={current}
@@ -644,13 +806,21 @@ export default function App() {
                   clips={clips}
                   markIn={markIn}
                   markOut={markOut}
+                  selected={selectedClip}
+                  busy={busy}
                   onSeek={seek}
+                  onSelectClip={selectClip}
+                  onTrimClip={(clip, start, end) => void patchClipTimes(clip, start, end)}
                   onSelectRange={(start, end) => {
+                    videoRef.current?.pause();
                     setMarkIn(start);
                     setMarkOut(end);
+                    setSelectedClipId(null);
+                    seek(start);
                   }}
                 />
                 <ClipBin
+                  key={detail.slug}
                   clips={clips}
                   segments={segments}
                   captionsOn={Boolean(detail.settings.captions)}
@@ -660,26 +830,36 @@ export default function App() {
                   markOut={markOut}
                   busy={busy}
                   selectedId={selectedClipId}
-                  onMarkIn={() => setMarkIn(current)}
-                  onMarkOut={() => setMarkOut(current)}
+                  onMarkIn={() => { setSelectedClipId(null); setMarkIn(current); }}
+                  onMarkOut={() => { setSelectedClipId(null); setMarkOut(current); }}
                   onSetMarks={(start, end) => {
+                    if (start !== null || end !== null) setSelectedClipId(null);
                     setMarkIn(start);
                     setMarkOut(end);
                   }}
                   onAdd={() => void addClip()}
+                  onAddRanges={addClipRanges}
                   onQuickAdd={(start, end) => void addClipRange(start, end, false)}
                   onToggle={(clip) => void toggleClip(clip)}
                   onDelete={(clip) => void removeClip(clip)}
                   onSave={(clip) => void saveClip(clip)}
-                  onSaveKept={() => void saveKept()}
-                  onSeek={seek}
+                  canPreview={Boolean(markedRange || selectedClip)}
+                  reviewing={reviewing}
+                  onPreview={() => {
+                    if (reviewing) { videoRef.current?.pause(); stopReview(); }
+                    else previewRange();
+                  }}
                   onPatch={(clip, start, end) => void patchClipTimes(clip, start, end)}
                   onKind={(clip, kind) => void patchClipKind(clip, kind)}
                   onRename={(clip, label) => void renameClip(clip, label)}
-                  onSelect={(clip) => setSelectedClipId(clip.id)}
+                  onSelect={selectClip}
                 />
               </div>
 
+              <button className="ghost transcript-toggle" aria-expanded={showTranscript} onClick={() => setShowTranscript((value) => !value)}>
+                {showTranscript ? "Hide transcript" : "Show transcript"}{segments.length ? " · " + segments.length + " lines" : ""}
+              </button>
+              {showTranscript && <>
               <div className="transcript-bar">
                 <Search size={14} />
                 <input
@@ -733,6 +913,7 @@ export default function App() {
                 )}
                 {segments.length > 0 && !visible.length && <li className="muted">No lines match that search.</li>}
               </ul>
+              </>}
             </>
           )}
         </main>
@@ -753,6 +934,8 @@ export default function App() {
           onPatchSettings={(settings) => void patchSettings(settings)}
           onStatus={setStatus}
           onDeleted={() => {
+            activeProject.current = null;
+            sessionStorage.removeItem("612-clip-project");
             setDetail(null);
             setSelected(null);
             loadList();
@@ -762,7 +945,6 @@ export default function App() {
             void api.transcribe(detail.slug, scope);
             setStatus(scope === "kept" ? "Transcribing kept clips…" : "Transcribing whole file…");
           }}
-          onSaveKept={() => void saveKept()}
           onExportBundle={async () => {
             if (!detail) return;
             if (creditDraft !== (detail.settings.credit || "")) {

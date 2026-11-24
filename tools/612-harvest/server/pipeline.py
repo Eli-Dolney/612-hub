@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -283,7 +285,10 @@ def open_folder(slug: str) -> str:
     path = project_dir(slug)
     if not path.exists():
         raise FileNotFoundError(slug)
-    subprocess.Popen(["open", str(path)])
+    if os.name == "nt":
+        os.startfile(str(path))
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
     return str(path)
 
 

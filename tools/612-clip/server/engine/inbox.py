@@ -103,10 +103,10 @@ def recipe_for_order(recipe: str, slug: str) -> dict[str, Any]:
 
 
 def open_inbox_folder() -> str:
-    path = inbox_path()
-    import subprocess
+    from server.pipeline import reveal
 
-    subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    path = inbox_path()
+    reveal(path)
     return str(path)
 
 

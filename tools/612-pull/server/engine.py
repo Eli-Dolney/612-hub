@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -205,10 +207,23 @@ def youtube_strip_playlist(url: str) -> str:
         return url
 
 
+@lru_cache(maxsize=8)
+def _supported_node(node: str) -> bool:
+    try:
+        result = subprocess.run(
+            [node, "--version"], capture_output=True, text=True, timeout=3,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        return result.returncode == 0 and int(result.stdout.strip().lstrip("v").split(".")[0]) >= 22
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
 def js_runtimes() -> dict[str, Any]:
-    node = shutil.which("node")
-    if node:
-        return {"node": {"path": node}}
+    local_node = Path(__file__).resolve().parents[3] / ".runtime" / ("node.exe" if os.name == "nt" else "node")
+    for node in (os.environ.get("YTDLP_NODE_PATH"), str(local_node), shutil.which("node")):
+        if node and os.path.isfile(node) and _supported_node(node):
+            return {"node": {"path": node}}
     deno = shutil.which("deno")
     if deno:
         return {"deno": {"path": deno}}
@@ -232,7 +247,7 @@ def pot_ready() -> bool:
 def which_tools() -> dict[str, Any]:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
-    node = shutil.which("node")
+    runtimes = js_runtimes()
     version = "?"
     try:
         import yt_dlp
@@ -243,7 +258,8 @@ def which_tools() -> dict[str, Any]:
     return {
         "ffmpeg": bool(ffmpeg),
         "ffprobe": bool(ffprobe),
-        "node": bool(node),
+        "node": "node" in runtimes,
+        "js_ready": "node" in runtimes or bool(shutil.which("deno")),
         "pot": pot_ready(),
         "ytdlp": version,
         "python": sys.version.split()[0],
@@ -435,10 +451,11 @@ def apply_youtube_clients(opts: dict[str, Any], *, music: bool = False, fallback
         # Explicit helper deployments use the PO-enabled client recommended by
         # yt-dlp. Mixing legacy clients can select streams that still return 403.
         youtube["player_client"] = ["web_safari"] if fallback else ["mweb"]
-    elif music:
-        youtube["player_client"] = ["tv", "web_music", "web_safari", "android_vr"]
     elif fallback:
-        youtube["player_client"] = ["tv", "android_vr", "web_safari", "ios"]
+        youtube["player_client"] = ["web_safari"]
+    else:
+        # Let yt-dlp select current clients; forced legacy audio clients can 403.
+        youtube.pop("player_client", None)
     youtube["comment_sort"] = ["top"]
     youtube["max_comments"] = [0]
     extractor_args["youtube"] = youtube

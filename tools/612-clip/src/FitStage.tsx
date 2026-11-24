@@ -31,6 +31,8 @@ export default function FitStage({
   captionWords = [],
   currentTime = 0,
   showSafeZones = false,
+  playing,
+  onTogglePlayback,
   onTimeUpdate,
   onPlay,
   onPause,
@@ -46,6 +48,8 @@ export default function FitStage({
   captionWords?: { word: string; start: number; end: number }[];
   currentTime?: number;
   showSafeZones?: boolean;
+  playing: boolean;
+  onTogglePlayback: () => void;
   onTimeUpdate: () => void;
   onPlay: () => void;
   onPause: () => void;
@@ -107,11 +111,16 @@ export default function FitStage({
           "--cap-rest": rest,
         } as CSSProperties
       }
-      onClick={() => {
-        const video = videoRef.current;
-        if (!video) return;
-        if (video.paused) void video.play();
-        else video.pause();
+      role="button"
+      tabIndex={0}
+      aria-label={playing ? "Pause video preview" : "Play video preview"}
+      onClick={onTogglePlayback}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          onTogglePlayback();
+        }
       }}
     >
       {blur && (
@@ -138,6 +147,7 @@ export default function FitStage({
           onTimeUpdate={handleTime}
           onPlay={handlePlay}
           onPause={handlePause}
+          onEnded={handlePause}
           onSeeked={(e) => syncBg(e.currentTarget)}
         />
       </div>

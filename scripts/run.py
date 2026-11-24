@@ -24,8 +24,17 @@ def main():
     parser.add_argument('--check',action='store_true',help='Check paths/dependencies without starting anything')
     args=parser.parse_args()
     folder, package, python=spec(args.tool)
+    env = os.environ.copy()
+    if os.name == 'nt':
+        # A Windows checkout can carry its own supported Node.js and npm.
+        runtime = ROOT / '.runtime'
+        if (runtime/'node.exe').is_file() and (runtime/'npm.cmd').is_file():
+            path = env.get('PATH')
+            env['PATH'] = os.pathsep.join((str(runtime), path)) if path else str(runtime)
+    node = shutil.which('node', path=env.get('PATH'))
+    npm = shutil.which('npm.cmd' if os.name == 'nt' else 'npm', path=env.get('PATH'))
     missing=[]
-    if not shutil.which('node') or not shutil.which('npm'):missing.append('Node.js/npm')
+    if not node or not npm:missing.append('Node.js/npm')
     if not (folder/'node_modules').is_dir():missing.append('npm dependencies (run npm ci inside this tool)')
     if 'server' in package['scripts'] and not python.is_file():missing.append('local Python environment (see WINDOWS.md or README.md)')
     if missing:
@@ -38,7 +47,7 @@ def main():
     if os.name=='nt':
         command=[os.environ.get('COMSPEC','cmd.exe'),'/d','/c','npm.cmd','run','dev']
     else:
-        command=[shutil.which('npm'),'run','dev']
-    return subprocess.call(command,cwd=folder)
+        command=[npm,'run','dev']
+    return subprocess.call(command,cwd=folder,env=env)
 
 if __name__=='__main__':sys.exit(main())

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
+import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import quote
@@ -106,7 +106,7 @@ def grokedit_running() -> bool:
 
 
 def open_url(url: str) -> None:
-    subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    webbrowser.open(url)
 
 
 def _concat(parts: list[Path], dest: Path) -> None:

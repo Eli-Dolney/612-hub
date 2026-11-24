@@ -127,6 +127,8 @@ export type Detail = Summary & {
   ranges: Range[];
   clips?: Clip[];
   original_path?: string;
+  can_save_beside_source?: boolean;
+  source_clips_folder?: string;
   source?: string;
   youtube?: Bundle["meta"];
 };

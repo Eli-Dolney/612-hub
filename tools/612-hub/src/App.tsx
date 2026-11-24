@@ -64,6 +64,19 @@ export default function App() {
     try {
       const result = await fn(id);
       if (result.message) setToast(result.message);
+      if (result.url) {
+        const deadline = Date.now() + 45000;
+        while (Date.now() < deadline) {
+          const snapshot = await api.status();
+          setStatus(snapshot);
+          if (snapshot.apps.some((app) => app.id === id && app.running)) {
+            window.location.assign(result.url);
+            return;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        }
+        throw new Error("The app did not finish starting. Check its setup and launch log, then try again.");
+      }
       await refresh();
     } catch (err) {
       setToast(err instanceof Error ? err.message : String(err));

@@ -6,8 +6,10 @@ import json
 import os
 import re
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Optional
 
 from server.config import (
@@ -20,6 +22,7 @@ from server.config import (
     WHISPER_MODELS,
 )
 from server.engine.clips import (
+    MIN_CLIP,
     clip_filename,
     clip_to_range,
     clips_to_ranges,
@@ -53,6 +56,8 @@ from server.engine.whisper import device_name, transcribe, whisper_available
 ProgressFn = Callable[[float, str], None]
 StopFn = Callable[[], bool]
 HOME = Path.home().resolve()
+SOURCE_CLIPS_DIR = "612 Clips"
+_clip_add_lock = Lock()
 LOGO_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # 612 Pull Watch slices: "Title.0s-3s.mkv", "Title.1m12s-3m50s.mkv"
 SLICE_NAME = re.compile(
@@ -198,6 +203,8 @@ def detail(slug: str) -> dict[str, Any]:
         "ranges": ranges,
         "clips": clips,
         "original_path": data.get("original_path"),
+        "can_save_beside_source": source_clip_root(data) is not None,
+        "source_clips_folder": data.get("source_clips_folder"),
         "source": data.get("source"),
         "youtube": (data.get("bundle") or {}).get("meta"),
         "window": as_range(data.get("window")),
@@ -217,20 +224,41 @@ def list_project_summaries() -> list[dict[str, Any]]:
     return rows
 
 
+def pull_video_folders() -> tuple[Path, ...]:
+    default = GROKPULL_DOWNLOADS.resolve()
+    config_dir = Path(os.environ.get("GROKPULL_CONFIG_DIR") or HOME)
+    try:
+        settings = json.loads((config_dir / ".grokpull.json").read_text(encoding="utf-8"))
+        configured = settings.get("video_folder") if isinstance(settings, dict) else None
+        if isinstance(configured, str) and configured:
+            folder = (default.parent / Path(configured).expanduser()).resolve()
+            if folder != default:
+                return default, folder
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return (default,)
+
+
 def list_pulls(limit: int = 200) -> list[dict[str, Any]]:
-    if not GROKPULL_DOWNLOADS.exists():
-        return []
-    files = [
-        p
-        for p in GROKPULL_DOWNLOADS.rglob("*")
-        if p.is_file()
-        and p.suffix.lower() in SUPPORTED
-        and not SLICE_NAME.search(p.name)
-    ]
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    files = {}
+    for root in pull_video_folders():
+        for current, folders, names in os.walk(root):
+            folders[:] = [
+                name for name in folders
+                if name.casefold() != SOURCE_CLIPS_DIR.casefold() and not name.startswith(".")
+            ]
+            for name in names:
+                path = Path(current) / name
+                if path.suffix.lower() not in SUPPORTED or SLICE_NAME.search(name):
+                    continue
+                try:
+                    files[path] = path.stat()
+                except OSError:
+                    continue
+    newest = sorted(files, key=lambda path: files[path].st_mtime, reverse=True)
     rows = []
-    for path in files[:limit]:
-        stat = path.stat()
+    for path in newest[:limit]:
+        stat = files[path]
         rows.append(
             {
                 "path": str(path),
@@ -245,7 +273,7 @@ def list_pulls(limit: int = 200) -> list[dict[str, Any]]:
 
 def create_from_file(src: Path, name: str = "", *, require_home: bool = True) -> dict[str, Any]:
     src = src.expanduser().resolve()
-    if require_home:
+    if require_home and not any(src.is_relative_to(folder) for folder in pull_video_folders()):
         src = under_home(src)
     if not src.is_file():
         raise FileNotFoundError(str(src))
@@ -352,22 +380,34 @@ def add_clip(
     kept: bool = True,
     kind: str = "talk",
 ) -> dict[str, Any]:
-    data = load_project(slug)
-    duration = float((data.get("probe") or {}).get("duration") or 0)
-    clips = load_clips(data, duration)
-    cid = next_clip_id(clips)
-    clip = normalize_clip(
-        {"id": cid, "start": start, "end": end, "label": label, "kept": kept, "kind": kind},
-        duration=duration,
-        clip_id=cid,
-    )
-    if not str(label or "").strip():
-        clip["label"] = f"Clip {len(clips) + 1}"
-        clip["text"] = clip["label"]
-    clips.append(clip)
-    _store_clips(data, clips)
-    save_project(slug, data)
-    return detail(slug)
+    return _add_clips(slug, [{"start": start, "end": end, "label": label, "kept": kept, "kind": kind}])
+
+
+def add_clip_ranges(slug: str, ranges: list[dict[str, Any]]) -> dict[str, Any]:
+    return _add_clips(slug, ranges, exact=True)
+
+
+def _add_clips(slug: str, rows: list[dict[str, Any]], *, exact: bool = False) -> dict[str, Any]:
+    with _clip_add_lock:
+        data = load_project(slug)
+        duration = float((data.get("probe") or {}).get("duration") or 0)
+        if exact and duration <= 0:
+            raise ValueError("Wait for the video to finish probing before adding ranges.")
+        clips = load_clips(data, duration)
+        first_id = next_clip_id(clips)
+        for index, row in enumerate(rows, start=1):
+            start, end = row["start"], row["end"]
+            if exact:
+                if not 0 <= start < end <= duration:
+                    raise ValueError(f"Range {index} must start before it ends and fit inside the video.")
+                if round(end - start, 9) < MIN_CLIP:
+                    raise ValueError(f"Range {index} must be at least {MIN_CLIP} seconds.")
+            clip_id = first_id + index - 1
+            label = (row.get("label") or "").strip() or f"Clip {len(clips) + 1}"
+            clips.append(normalize_clip({**row, "label": label}, duration=duration, clip_id=clip_id))
+        _store_clips(data, clips)
+        save_project(slug, data)
+        return detail(slug)
 
 
 def patch_clip(slug: str, clip_id: int, fields: dict[str, Any]) -> dict[str, Any]:
@@ -464,19 +504,59 @@ def export_clip(slug: str, clip_id: int, progress: ProgressFn) -> dict[str, Any]
     return out
 
 
-def export_kept_clips(slug: str, progress: ProgressFn) -> dict[str, Any]:
+def source_clip_root(data: dict[str, Any]) -> Optional[Path]:
+    original = data.get("original_path")
+    if isinstance(original, str) and original:
+        try:
+            source = Path(original).resolve()
+            if source.is_file():
+                return source.parent / SOURCE_CLIPS_DIR
+        except (OSError, ValueError, RuntimeError):
+            pass
+    return None
+
+
+def _publish_clips(root: Path, slug: str, files: list[Path]) -> Path:
+    if Path(slug).name != slug or slug in {".", ".."}:
+        raise ValueError("Invalid project name.")
+    root.mkdir(exist_ok=True)
+    if root.resolve() != root:
+        raise RuntimeError("The 612 Clips folder must be beside the original video.")
+    index = 1
+    while True:
+        folder = root / (slug if index == 1 else f"{slug} ({index})")
+        try:
+            folder.mkdir()
+            break
+        except FileExistsError:
+            index += 1
+    try:
+        for file in files:
+            shutil.copy2(file, folder / file.name)
+    except OSError:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    return folder
+
+
+def export_kept_clips(slug: str, progress: ProgressFn, *, beside_source: bool = False) -> dict[str, Any]:
     data = load_project(slug)
     duration = float((data.get("probe") or {}).get("duration") or 0)
     kept = kept_clips(load_clips(data, duration))
     if not kept:
         raise RuntimeError("Keep at least one clip first")
+    root = source_clip_root(data) if beside_source else None
+    if beside_source and root is None:
+        raise RuntimeError("The original video could not be found. Choose Project bundle to save the clips.")
     n = len(kept)
+    render_span = 0.97 if root is not None else 1.0
+    files: list[Path] = []
     last: dict[str, Any] = {}
     captioned = 0
     skipped = 0
     for i, clip in enumerate(kept):
         def clip_progress(value: float, step: str, *, index=i) -> None:
-            span = 1.0 / n
+            span = render_span / n
             progress(index * span + span * value, f"{clip.get('label') or 'Clip'} · {step}")
 
         last = export_clip(slug, int(clip["id"]), clip_progress)
@@ -485,12 +565,25 @@ def export_kept_clips(slug: str, progress: ProgressFn) -> dict[str, Any]:
             captioned += 1
         else:
             skipped += 1
+        if root is not None:
+            file = Path(info["filename"])
+            files.append(file)
+            if info.get("captioned"):
+                files.append(file.with_suffix(".ass"))
     last["last_export"] = {
         **(last.get("last_export") or {}),
         "count": n,
         "captioned": captioned,
         "skipped_captions": skipped,
     }
+    if root is not None:
+        progress(0.99, "Saving beside source")
+        folder = _publish_clips(root, slug, files)
+        data = load_project(slug)
+        data["source_clips_folder"] = str(folder)
+        save_project(slug, data)
+        filename = Path(last["last_export"]["filename"]).name
+        last["last_export"].update(folder=str(folder), filename=str(folder / filename))
     return last
 
 
@@ -643,7 +736,7 @@ def health() -> dict[str, Any]:
         "models": list(WHISPER_MODELS),
         "formats": sorted(SUPPORTED),
         "grokedit": grokedit_running(),
-        "pulls": GROKPULL_DOWNLOADS.exists(),
+        "pulls": any(folder.is_dir() for folder in pull_video_folders()),
         "ytdlp": ytdlp_available(),
     }
 
@@ -836,16 +929,26 @@ def export_project(
     return summary(slug, data)
 
 
-def open_bundle(slug: str) -> None:
+def open_bundle(slug: str, *, beside_source: bool = False) -> None:
+    if beside_source:
+        folder = load_project(slug).get("source_clips_folder")
+        if not folder or not Path(folder).is_dir():
+            raise FileNotFoundError("The saved clip folder could not be found.")
+        reveal(Path(folder))
+        return
     dest = project_dir(slug) / "bundle"
     dest.mkdir(parents=True, exist_ok=True)
     reveal(dest)
 
 
 def reveal(path: Path) -> None:
+    if os.name == "nt":
+        os.startfile(str(path))
+        return
+
     import subprocess
 
-    opener = "open" if os.uname().sysname == "Darwin" else "xdg-open"
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
     subprocess.Popen([opener, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

@@ -25,7 +25,7 @@ def normalize_clip(
     if duration and duration > 0:
         end = min(end, duration)
         start = min(start, max(0.0, duration - MIN_CLIP))
-    if end - start < MIN_CLIP:
+    if round(end - start, 9) < MIN_CLIP:
         raise ValueError("Clip must be at least 0.05 seconds")
     label = str(raw.get("label") or "").strip() or f"Clip {clip_id}"
     kind = str(raw.get("kind") or "talk").strip().lower()

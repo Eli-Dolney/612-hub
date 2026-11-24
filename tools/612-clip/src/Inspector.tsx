@@ -76,7 +76,6 @@ export default function Inspector({
   onStatus,
   onDeleted,
   onTranscribe,
-  onSaveKept,
   onExportBundle,
   onDetail,
   onInboxRecipe,
@@ -97,7 +96,6 @@ export default function Inspector({
   onStatus: (text: string) => void;
   onDeleted: () => void;
   onTranscribe: (scope: "all" | "kept") => void;
-  onSaveKept: () => void;
   onExportBundle: () => void;
   onDetail: (next: Detail) => void;
   onInboxRecipe: (recipe: InboxState["recipe"]) => void;
@@ -193,14 +191,7 @@ export default function Inspector({
                 <button className="tiny" disabled={busy || !detail.duration} onClick={() => onTranscribe("all")}>
                   Whole file
                 </button>
-                <button className="pull" disabled={busy || !clips.some((c) => c.kept)} onClick={onSaveKept}>
-                  Save kept clips
-                </button>
               </div>
-              <p className="hint">
-                Save writes one clip. Save kept writes each keeper. Concat joins keepers into one file. Marked clips win
-                over transcript lines.
-              </p>
 
               <div className="pane-head">Suggest</div>
               <label className="field">
@@ -230,7 +221,6 @@ export default function Inspector({
                   Strip silence
                 </button>
               </div>
-              <p className="hint">Suggestions land in the clip bin. Keep, drop, or trim — still a select bin.</p>
 
               <label className="check">
                 <input
@@ -271,7 +261,7 @@ export default function Inspector({
                 />
               </label>
               <button className="ghost wide" disabled={busy || !detail.duration} onClick={onExportBundle}>
-                Concat bundle
+                Export joined video
               </button>
             </>
           ) : (
@@ -742,10 +732,10 @@ export default function Inspector({
 
       <div className="pane-head">Jobs</div>
       <ul className="jobs">
-        {jobs.slice(0, 10).map((job) => (
+        {(detail ? jobs.filter((job) => job.project === detail.slug || job.status === "running" || job.status === "queued") : jobs).slice(0, 6).map((job) => (
           <li key={job.id}>
             <em className={job.status}>{kindLabel(job)}</em>
-            <span>{job.step}</span>
+            <span className="job-step" title={job.error || job.step}>{job.step}</span>
             <span className="job-tools">
               {job.status === "queued" || job.status === "running" ? (
                 <>
@@ -758,9 +748,7 @@ export default function Inspector({
                     <X size={10} />
                   </button>
                 </>
-              ) : (
-                job.project
-              )}
+              ) : null}
             </span>
           </li>
         ))}

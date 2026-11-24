@@ -142,6 +142,7 @@ export type Health = {
   ffmpeg: boolean;
   ffprobe: boolean;
   node: boolean;
+  js_ready?: boolean;
   pot?: boolean;
   ytdlp: string;
   python: string;

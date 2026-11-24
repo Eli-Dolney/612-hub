@@ -7,7 +7,9 @@ const tool = process.argv[2];
 if (!Object.hasOwn(ports, tool)) throw new Error('Unknown API tool');
 const python = resolve('.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 if (!existsSync(python)) throw new Error('Create this tool’s .venv and install server/requirements.txt first. See WINDOWS.md.');
-const child = spawn(python, ['-m','uvicorn','server.app:app','--host','127.0.0.1','--port',String(ports[tool]),'--reload','--reload-dir','server','--timeout-graceful-shutdown','1'],{stdio:'inherit'});
+// Uvicorn's Windows reloader sends Ctrl+C to the shared npm console.
+const reload = process.platform === 'win32' ? [] : ['--reload', '--reload-dir', 'server'];
+const child = spawn(python, ['-m','uvicorn','server.app:app','--host','127.0.0.1','--port',String(ports[tool]),...reload,'--timeout-graceful-shutdown','1'],{stdio:'inherit'});
 child.on('error',error=>{ console.error(error.message); process.exitCode=1; });
 child.on('exit',code=>{process.exitCode=code ?? 1;});
 for (const signal of ['SIGINT','SIGTERM']) process.on(signal,()=>child.kill(signal));

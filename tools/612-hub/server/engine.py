@@ -29,6 +29,7 @@ _launched: dict[str, int] = {}
 OPENED_PATH = LOGS / "opened.json"
 SOFT_LIVE = 2
 HARD_LIVE = 3
+HEALTH_TIMEOUT = 5.0  # Dependency checks can take over a second on Windows.
 CPU_BUSY = 160.0
 CPU_FULL = 280.0
 MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".mp3", ".m4a", ".wav", ".flac", ".opus", ".aac"}
@@ -39,10 +40,10 @@ DEFAULT_PREFS = {
 }
 
 
-def _http_ok(url: str, timeout: float = 0.8) -> bool:
+def _http_ok(url: str, timeout: float = HEALTH_TIMEOUT) -> bool:
     try:
-        urllib.request.urlopen(url, timeout=timeout)
-        return True
+        with urllib.request.urlopen(url, timeout=timeout):
+            return True
     except Exception:
         return False
 
@@ -198,7 +199,7 @@ def configured(spec: AppSpec) -> bool:
         return False
     has_ui = (spec.path / "node_modules").is_dir()
     if spec.launch == "run.sh":
-        return has_ui and (spec.path / ".venv" / "bin" / "python").is_file()
+        return has_ui and (spec.path / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")).is_file()
     return has_ui
 
 
@@ -225,7 +226,7 @@ def app_status(spec: AppSpec, table: Optional[list[tuple[int, int, float, int]]]
     jobs = []
     health = None
     if running and spec.api_port:
-        health = fetch_json(f"http://127.0.0.1:{spec.api_port}/api/health")
+        health = fetch_json(f"http://127.0.0.1:{spec.api_port}/api/health", timeout=HEALTH_TIMEOUT)
         queue = fetch_json(f"http://127.0.0.1:{spec.api_port}/api/queue")
         if isinstance(queue, dict) and isinstance(queue.get("jobs"), list):
             jobs = queue["jobs"][:8]
@@ -495,17 +496,15 @@ def requirements() -> list[dict[str, Any]]:
             return False, ""
         result = subprocess.run([bin_path, *args], capture_output=True, text=True)
         text = (result.stdout or result.stderr or bin_path).strip().splitlines()
-        return True, text[0] if text else bin_path
+        return result.returncode == 0, text[0] if text else bin_path
 
-    py_ok, py_ver = which_ver("python3.12", ["--version"])
-    if not py_ok:
-        py_ok, py_ver = which_ver("python3", ["--version"])
+    py_ok, py_ver = sys.version_info >= (3, 12), f"Python {sys.version.split()[0]}"
     node_ok, node_ver = which_ver("node", ["--version"])
     ff_ok, ff_ver = which_ver("ffmpeg", ["-version"])
     git_ok, git_ver = which_ver("git", ["--version"])
     return [
         {"id": "python", "name": "Python 3.12+", "available": py_ok, "version": py_ver, "need": "Most 612 apps"},
-        {"id": "node", "name": "Node.js 18+", "available": node_ok, "version": node_ver, "need": "Every 612 UI"},
+        {"id": "node", "name": "Node.js 22.12+", "available": node_ok, "version": node_ver, "need": "Every 612 UI"},
         {"id": "ffmpeg", "name": "FFmpeg", "available": ff_ok, "version": ff_ver, "need": "Pull, Mix, Clip, Voice"},
         {"id": "git", "name": "Git", "available": git_ok, "version": git_ver, "need": "Optional"},
     ]
@@ -516,14 +515,17 @@ def _cmd(spec: AppSpec) -> list[str]:
     return [sys.executable, str(launcher), spec.id]
 
 
-def launch(app_id: str, *, force: bool = False) -> dict[str, Any]:
+def launch(app_id: str, *, force: bool = False, external: bool = True) -> dict[str, Any]:
     spec = get_app(app_id)
     if not installed(spec):
         raise FileNotFoundError(f"{spec.name} is not in this checkout ({spec.path})")
     if live(spec):
         touch_opened(app_id)
-        open_url(spec.url)
+        if external:
+            open_url(spec.url)
         return {"ok": True, "message": f"{spec.name} is already running", "url": spec.url, "started": False}
+    if not configured(spec):
+        raise RuntimeError(f"{spec.name} needs first-time setup. Its app dependencies or Python environment are missing. See WINDOWS.md in the checkout.")
     table = _ps_table()
     apps = [app_status(s, table) for s in APPS]
     load = load_report(apps)
@@ -545,11 +547,12 @@ def launch(app_id: str, *, force: bool = False) -> dict[str, Any]:
         stdout=log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         env=env,
     )
     _launched[spec.id] = proc.pid
     touch_opened(app_id)
-    threading.Thread(target=_wait_and_open, args=(spec, proc), daemon=True).start()
+    threading.Thread(target=_wait_and_open, args=(spec, proc, external), daemon=True).start()
     return {
         "ok": True,
         "message": f"Starting {spec.name}",
@@ -559,11 +562,12 @@ def launch(app_id: str, *, force: bool = False) -> dict[str, Any]:
     }
 
 
-def _wait_and_open(spec: AppSpec, proc: subprocess.Popen) -> None:
+def _wait_and_open(spec: AppSpec, proc: subprocess.Popen, external: bool = True) -> None:
     deadline = time.time() + 90
     while time.time() < deadline:
         if live(spec):
-            open_url(spec.url)
+            if external:
+                open_url(spec.url)
             return
         if proc.poll() is not None:
             return
@@ -619,12 +623,13 @@ def open_url(url: str) -> None:
     webbrowser.open(url)
 
 
-def open_app(app_id: str) -> dict[str, Any]:
+def open_app(app_id: str, *, external: bool = True) -> dict[str, Any]:
     spec = get_app(app_id)
     if not live(spec):
-        return launch(app_id)
+        return launch(app_id, external=external)
     touch_opened(app_id)
-    open_url(spec.url)
+    if external:
+        open_url(spec.url)
     return {"ok": True, "url": spec.url, "message": f"Opened {spec.name}"}
 
 

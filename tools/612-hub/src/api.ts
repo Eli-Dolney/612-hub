@@ -17,13 +17,13 @@ async function json<T>(res: Response): Promise<T> {
 export const api = {
   status: () => fetch("/api/status").then((r) => json<Status>(r)),
   launch: (id: string, force = false) =>
-    fetch(`/api/apps/${encodeURIComponent(id)}/launch${force ? "?force=true" : ""}`, { method: "POST" }).then((r) =>
+    fetch(`/api/apps/${encodeURIComponent(id)}/launch?external=false${force ? "&force=true" : ""}`, { method: "POST" }).then((r) =>
       json<{ message: string; url?: string }>(r),
     ),
   stop: (id: string) =>
     fetch(`/api/apps/${encodeURIComponent(id)}/stop`, { method: "POST" }).then((r) => json<{ message: string }>(r)),
   open: (id: string) =>
-    fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: "POST" }).then((r) => json<{ url: string; message?: string }>(r)),
+    fetch(`/api/apps/${encodeURIComponent(id)}/open?external=false`, { method: "POST" }).then((r) => json<{ url: string; message?: string }>(r)),
   stopOthers: (keep?: string) =>
     fetch(`/api/stop-others${keep ? `?keep=${encodeURIComponent(keep)}` : ""}`, { method: "POST" }).then((r) =>
       json<{ message: string; stopped: string[] }>(r),
